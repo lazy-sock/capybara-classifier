@@ -2,7 +2,10 @@ import requests
 from PIL import Image
 from io import BytesIO
 import os
+from openai import OpenAI
 
+AI = OpenAI(api_key="af45b285ad3047e5ad0e1063270a4095", base_url="https://api.aimlapi.com")
+settings = "Antworte mit nur EINEM Wort"
 API_KEY = '29154084-59fd978d2443c1138458d6cfd'
 URL = 'https://pixabay.com/api/'
 
@@ -22,7 +25,14 @@ if response.status_code == 200:
     i = 0
     for hit in data['hits']:
         
-        tag = hit['tags'].split(',')[0]
+        prompt = "Fasse mir die folgenden Worte in EINEM Wort zusammen:" + hit['tags']
+        completion = AI.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": settings},
+                        {"role": "user", "content": prompt}
+                    ])
+        tag = completion.choices[0].message.content
         path = os.path.join('images', tag)
         if not os.path.exists(path):
             os.mkdir(path)

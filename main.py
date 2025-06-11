@@ -15,6 +15,7 @@ from pathlib import Path
 import json
 import os
 import math
+from tqdm import tqdm
 
 class AttentionModule(nn.Module):
     """Attention mechanism for focusing on discriminative features"""
@@ -340,6 +341,8 @@ class BirdClassificationTrainer:
                 print(f'New best model saved with validation accuracy: {val_acc:.2f}%')
         
         print(f'\nTraining completed! Best validation accuracy: {best_val_acc:.2f}%')
+        
+        return best_val_acc
     
     def plot_training_history(self):
         """Plot training history"""
@@ -621,7 +624,7 @@ class BirdClassificationTrainer:
         print(f"Model loaded from {checkpoint_path}")
         print(f"Best validation accuracy was: {checkpoint['best_val_acc']:.2f}%")
 
-def main_training_pipeline(data_dir, epochs=50, batch_size=32, lr=0.001):
+def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     """
     Complete training pipeline for bird classification
     
@@ -630,6 +633,7 @@ def main_training_pipeline(data_dir, epochs=50, batch_size=32, lr=0.001):
         epochs: Number of training epochs
         batch_size: Batch size for training
         lr: Learning rate
+        grid_search: If True, runs a grid search without visualizations
     """
     
     print("Starting Bird Classification Training Pipeline")
@@ -638,7 +642,7 @@ def main_training_pipeline(data_dir, epochs=50, batch_size=32, lr=0.001):
     # Check if data directory exists
     if not os.path.exists(data_dir):
         print(f"Error: Data directory {data_dir} does not exist!")
-        return
+        return None, None, None, None
     
     # Initialize model (we'll set num_classes after loading data)
     model = None
@@ -665,37 +669,79 @@ def main_training_pipeline(data_dir, epochs=50, batch_size=32, lr=0.001):
         print(f"Trainable parameters: {trainable_params:,}")
         
         # Show sample images
-        print("\nSample images from dataset:")
-        trainer.show_sample_images(train_loader)
+        if not grid_search:
+            print("\nSample images from dataset:")
+            trainer.show_sample_images(train_loader)
         
         # Train the model
         print("\nStarting training...")
-        trainer.train(train_loader, val_loader, epochs=epochs, lr=lr)
+        accuracy = trainer.train(train_loader, val_loader, epochs=epochs, lr=lr)
         
         # Plot training history
-        trainer.plot_training_history()
+        if not grid_search:
+            trainer.plot_training_history()
         
         # Evaluate on test set
-        print("\nEvaluating on test set...")
-        trainer.evaluate_model(test_loader)
+        if not grid_search:
+            print("\nEvaluating on test set...")
+            trainer.evaluate_model(test_loader)
         
         # Analyze misclassified images
-        print("\nAnalyzing misclassified images...")
-        trainer.analyze_misclassified_images(test_loader, max_images_per_class=8)
+        if not grid_search:
+            print("\nAnalyzing misclassified images...")
+            trainer.analyze_misclassified_images(test_loader, max_images_per_class=8)
         
-        return trainer, train_loader, val_loader, test_loader
+        return trainer, train_loader, val_loader, test_loader, accuracy
         
     except Exception as e:
         print(f"Error during training: {str(e)}")
         return None, None, None, None
 
+def gridsearch(data_directory):
+    param_grid = {
+        'batch_size': [16, 32],
+        'epochs': [6, 12],
+        'lr': [0.001, 0.0001]
+    }
+    
+    from itertools import product
+    keys = param_grid.keys()
+    combinations = list(product(*param_grid.values()))
+    results = []
+    
+    for combo in combinations:
+        params = dict(zip(keys, combo))
+        print("=" * 50)
+        print(f"Testing combination: {params}")
+        
+        try:
+            trainer, train_loader, val_loader, test_loader, accuracy = main_training_pipeline(
+                data_dir = data_directory,
+                batch_size=params['batch_size'],
+                epochs=params['epochs'],
+                lr=params['lr'],
+                grid_search=True
+            )
+            results.append((params, accuracy))
+            
+        except Exception as e:
+            print(f"Error with combination {params}: {str(e)}")
+        
+    best_params = max(results, key=lambda x: x[1])
+    print("Best parameters found:" , best_params[0])
+    print("Best accuracy:", best_params[1])
+
 if __name__ == "__main__":
-    data_directory = "bird_dataset_v3"
+    data_directory = "d:\Code\BWKI\capybara-classifier\images/bird_dataset_v3/birds"  # Change this to your dataset path
     
-    trainer, train_loader, val_loader, test_loader = main_training_pipeline(
+    gridsearch(data_directory)
+    
+    """
+    trainer, train_loader, val_loader, test_loader, accuracy = main_training_pipeline(
         data_dir=data_directory,
-        epochs=5,
         batch_size=32,
-        lr=0.001
+        epochs=10,
+        lr=0.001,
+        grid_search=False
     )
-    
+    """
