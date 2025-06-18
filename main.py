@@ -16,6 +16,7 @@ import json
 import os
 import math
 from tqdm import tqdm
+import torchvision.transforms.functional as TF
 
 class AttentionModule(nn.Module):
     """Attention mechanism for focusing on discriminative features"""
@@ -73,7 +74,8 @@ class FineGrainedBirdCNN(nn.Module):
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate)
+            nn.Dropout(dropout_rate),
+            
         )
         
         # Classification head
@@ -110,7 +112,7 @@ class FineGrainedBirdCNN(nn.Module):
         # Classification
         output = self.classifier(enhanced_features)
         
-        return output, enhanced_features  # Return features for visualization
+        return output, attended_features2, enhanced_features  # Return features for visualization
 
 class BirdClassificationTrainer:
     """Trainer class for fine-grained bird classification with ImageFolder support"""
@@ -247,7 +249,7 @@ class BirdClassificationTrainer:
             data, target = data.to(self.device), target.to(self.device)
             
             optimizer.zero_grad()
-            output, _ = self.model(data)
+            output, _, _ = self.model(data)
             loss = criterion(output, target)
             loss.backward()
             optimizer.step()
@@ -275,7 +277,24 @@ class BirdClassificationTrainer:
         with torch.no_grad():
             for data, target in val_loader:
                 data, target = data.to(self.device), target.to(self.device)
-                output, _ = self.model(data)
+                output1, _, _ = self.model(data)
+                output2, _, _ = self.model(data)
+                output3, _, _ = self.model(data)
+
+                _, pred1 = torch.max(output1.data, 1)
+                _, pred2 = torch.max(output2.data, 1)
+                _, pred3 = torch.max(output3.data, 1)
+                
+            
+                
+                if(torch.equal(pred1, pred2)):
+                    output = output1
+                elif(torch.equal(pred1, pred3)):
+                    output = output1
+                elif(torch.equal(pred3, pred2)):
+                    output = output2
+                else:
+                    output = output1
                 loss = criterion(output, target)
                 
                 running_loss += loss.item()
@@ -400,7 +419,7 @@ class BirdClassificationTrainer:
                 data_gpu = data.to(self.device)
                 target_gpu = target.to(self.device)
                 
-                output, _ = self.model(data_gpu)
+                output, _, _ = self.model(data_gpu)
                 _, predicted = torch.max(output, 1)
                 
                 # Find misclassified images in this batch
@@ -582,7 +601,7 @@ class BirdClassificationTrainer:
         with torch.no_grad():
             for data, target in test_loader:
                 data = data.to(self.device)
-                output, _ = self.model(data)
+                output, _, _ = self.model(data)
                 _, predicted = torch.max(output, 1)
                 
                 all_predictions.extend(predicted.cpu().numpy())
@@ -624,6 +643,54 @@ class BirdClassificationTrainer:
         print(f"Model loaded from {checkpoint_path}")
         print(f"Best validation accuracy was: {checkpoint['best_val_acc']:.2f}%")
 
+    def show_heatmap_on_image(self, train_loader):
+            
+        for batch_id, (data, target) in enumerate(train_loader):
+            with torch.no_grad():
+                _, heatmaps, _ = self.model(data)
+
+            i=0
+            # Schleife über alle Bilder im Batch
+            for b in range(data.size(0)):
+                img_tensor = data[b].cpu()
+                heatmap_tensor = heatmaps[b].cpu()
+
+
+                # Denormalize images for display
+                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+                
+                # Alle Heatmaps und Keypoints für dieses Bild visualisieren
+                
+                fig, axes = plt.subplots(1, 6, figsize=(12, 6))
+                axes = axes.ravel()
+                
+                # Originalbild vorbereiten
+                img = img_tensor * std + mean
+                img = TF.to_pil_image(img)
+
+                axes[0].imshow(img)
+                axes[0].axis('off')
+                
+                for part_id, heatmap in enumerate(heatmap_tensor):
+                    axes[part_id+1].imshow(heatmap.numpy(), alpha=0.5, cmap='jet')
+                    
+                    if part_id >= 4:
+                        break
+                    
+                plt.title(f'Bild {b}, Part {part_id}')
+                
+                plt.tight_layout()
+                plt.show()
+                
+                i+=1
+                if i%5 ==0:
+                    if input("more heatmaps? (y/n): ") == 'n':
+                        return
+                               
+
+                
+
 def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     """
     Complete training pipeline for bird classification
@@ -648,54 +715,58 @@ def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     model = None
     trainer = None
     
-    try:
-        # Prepare data
-        temp_trainer = BirdClassificationTrainer(FineGrainedBirdCNN(10))  # Temporary
-        train_loader, val_loader, test_loader, num_classes = temp_trainer.prepare_data(
-            data_dir, batch_size=batch_size
-        )
+    #try:
+    # Prepare data
+    temp_trainer = BirdClassificationTrainer(FineGrainedBirdCNN(10))  # Temporary
+    train_loader, val_loader, test_loader, num_classes = temp_trainer.prepare_data(
+        data_dir, batch_size=batch_size
+    )
+    
+    # Create the actual model with correct number of classes
+    model = FineGrainedBirdCNN(num_classes=num_classes)
+    trainer = BirdClassificationTrainer(model)
+    trainer.class_names = temp_trainer.class_names
+    
+    # Model summary
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    print(f"\nModel Summary:")
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+
+    # Show sample images
+    if not grid_search:
+        print("\nSample images from dataset:")
+        trainer.show_sample_images(train_loader)
+    
+    # Train the model
+    print("\nStarting training...")
+    accuracy = trainer.train(train_loader, val_loader, epochs=epochs, lr=lr)
+    
+    # Plot training history
+    if not grid_search:
+        trainer.plot_training_history()
+    
+    # Evaluate on test set
+    if not grid_search:
+        print("\nEvaluating on test set...")
+        trainer.evaluate_model(test_loader)
+    
+    # Analyze misclassified images
+    if not grid_search:
+        print("\nAnalyzing misclassified images...")
+        trainer.analyze_misclassified_images(test_loader, max_images_per_class=8)
         
-        # Create the actual model with correct number of classes
-        model = FineGrainedBirdCNN(num_classes=num_classes)
-        trainer = BirdClassificationTrainer(model)
-        trainer.class_names = temp_trainer.class_names
+    trainer.show_heatmap_on_image(train_loader)
+    
+    return trainer, train_loader, val_loader, test_loader, accuracy
+    
         
-        # Model summary
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         
-        print(f"\nModel Summary:")
-        print(f"Total parameters: {total_params:,}")
-        print(f"Trainable parameters: {trainable_params:,}")
-        
-        # Show sample images
-        if not grid_search:
-            print("\nSample images from dataset:")
-            trainer.show_sample_images(train_loader)
-        
-        # Train the model
-        print("\nStarting training...")
-        accuracy = trainer.train(train_loader, val_loader, epochs=epochs, lr=lr)
-        
-        # Plot training history
-        if not grid_search:
-            trainer.plot_training_history()
-        
-        # Evaluate on test set
-        if not grid_search:
-            print("\nEvaluating on test set...")
-            trainer.evaluate_model(test_loader)
-        
-        # Analyze misclassified images
-        if not grid_search:
-            print("\nAnalyzing misclassified images...")
-            trainer.analyze_misclassified_images(test_loader, max_images_per_class=8)
-        
-        return trainer, train_loader, val_loader, test_loader, accuracy
-        
-    except Exception as e:
-        print(f"Error during training: {str(e)}")
-        return None, None, None, None
+    #except Exception as e:
+    #    print(f"Error during training: {str(e)}")
+    #    return None, None, None, None, None
 
 def gridsearch(data_directory):
     param_grid = {
@@ -734,14 +805,16 @@ def gridsearch(data_directory):
 if __name__ == "__main__":
     data_directory = "d:\Code\BWKI\capybara-classifier\images/bird_dataset_v3/birds"  # Change this to your dataset path
     
-    gridsearch(data_directory)
+    #gridsearch(data_directory)
     
-    """
+    
     trainer, train_loader, val_loader, test_loader, accuracy = main_training_pipeline(
         data_dir=data_directory,
         batch_size=32,
-        epochs=10,
+        epochs=25,
         lr=0.001,
         grid_search=False
     )
-    """
+    
+    
+    
