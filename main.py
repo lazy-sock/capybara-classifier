@@ -21,7 +21,7 @@ import torchvision.transforms.functional as TF
 class AttentionModule(nn.Module):
     """Attention mechanism for focusing on discriminative features"""
     
-    def __init__(self, in_channels, reduction=16):
+    def __init__(self, in_channels, reduction=8):
         super(AttentionModule, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
@@ -45,6 +45,36 @@ class AttentionModule(nn.Module):
         
         return x * attention.expand_as(x)
 
+class CBAM(nn.Module):
+    def __init__(self, channels=2048, reduction=4):
+        super(CBAM, self).__init__()
+        
+        # Channel Attention
+        self.channelAttention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(channels // reduction, channels, 1, bias=False),
+            nn.Sigmoid()
+        )
+
+        # Spatial Attention
+        self.spatialAttention = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size=3, padding=1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        ca = self.channelAttention(x)
+        x = x * ca
+
+        sa_input = torch.cat([x.mean(1, keepdim=True), x.max(1, keepdim=True)[0]], dim=1)
+        sa = self.spatialAttention(sa_input)
+        x = x * sa
+
+        return x
+        
+        
 class FineGrainedBirdCNN(nn.Module):
     """Fine-grained CNN for bird species classification"""
     
@@ -58,8 +88,8 @@ class FineGrainedBirdCNN(nn.Module):
         self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
         
         # Add attention modules
-        self.attention1 = AttentionModule(2048)
-        self.attention2 = AttentionModule(2048)
+        self.attention1 = CBAM()#AttentionModule(2048)
+        self.attention2 = CBAM()#AttentionModule(2048)
         
         # Global average pooling
         self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -112,7 +142,7 @@ class FineGrainedBirdCNN(nn.Module):
         # Classification
         output = self.classifier(enhanced_features)
         
-        return output, attended_features2, enhanced_features  # Return features for visualization
+        return output, attended_features1+attended_features1, enhanced_features  # Return features for visualization
 
 class BirdClassificationTrainer:
     """Trainer class for fine-grained bird classification with ImageFolder support"""
@@ -662,7 +692,7 @@ class BirdClassificationTrainer:
                 
                 # Alle Heatmaps und Keypoints für dieses Bild visualisieren
                 
-                fig, axes = plt.subplots(1, 6, figsize=(12, 6))
+                fig, axes = plt.subplots(1, 2, figsize=(12, 6))
                 axes = axes.ravel()
                 
                 # Originalbild vorbereiten
@@ -671,14 +701,12 @@ class BirdClassificationTrainer:
 
                 axes[0].imshow(img)
                 axes[0].axis('off')
+                heatmap = heatmap_tensor[0]
                 
-                for part_id, heatmap in enumerate(heatmap_tensor):
-                    axes[part_id+1].imshow(heatmap.numpy(), alpha=0.5, cmap='jet')
-                    
-                    if part_id >= 4:
-                        break
-                    
-                plt.title(f'Bild {b}, Part {part_id}')
+                for part_id, pHeatmap in enumerate(heatmap_tensor, 1):                    
+                    heatmap += pHeatmap.numpy()
+                
+                axes[1].imshow(heatmap.numpy(), alpha=0.5, cmap='jet') 
                 
                 plt.tight_layout()
                 plt.show()
@@ -688,9 +716,6 @@ class BirdClassificationTrainer:
                     if input("more heatmaps? (y/n): ") == 'n':
                         return
                                
-
-                
-
 def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     """
     Complete training pipeline for bird classification
@@ -811,7 +836,7 @@ if __name__ == "__main__":
     trainer, train_loader, val_loader, test_loader, accuracy = main_training_pipeline(
         data_dir=data_directory,
         batch_size=32,
-        epochs=25,
+        epochs=10,
         lr=0.001,
         grid_search=False
     )
