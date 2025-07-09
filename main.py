@@ -828,7 +828,7 @@ def gridsearch(data_directory):
     print("Best accuracy:", best_params[1])
 
 if __name__ == "__main__":
-    data_directory = "d:\Code\BWKI\capybara-classifier\images/bird_dataset_v3/birds"  # Change this to your dataset path
+    data_directory = "./images/bird_dataset_v3/birds"  # Change this to your dataset path
     
     #gridsearch(data_directory)
     
