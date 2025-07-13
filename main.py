@@ -17,6 +17,7 @@ import os
 import math
 from tqdm import tqdm
 import torchvision.transforms.functional as TF
+from scipy.ndimage import zoom
 
 class AttentionModule(nn.Module):
     """Attention mechanism for focusing on discriminative features"""
@@ -88,8 +89,7 @@ class FineGrainedBirdCNN(nn.Module):
         self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
         
         # Add attention modules
-        self.attention1 = CBAM()#AttentionModule(2048)
-        self.attention2 = CBAM()#AttentionModule(2048)
+        self.attention = CBAM()#AttentionModule(2048)
         
         # Global average pooling
         self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -129,11 +129,12 @@ class FineGrainedBirdCNN(nn.Module):
         features = self.backbone(x)
         
         # Apply attention mechanisms
-        attended_features1 = self.attention1(features)
-        attended_features2 = self.attention2(attended_features1)
+        attended_features1 = self.attention(features)
+        attended_features2 = self.attention(attended_features1)
+        attended_features3 = self.attention(attended_features2)
         
         # Global average pooling
-        pooled_features = self.global_avg_pool(attended_features2)
+        pooled_features = self.global_avg_pool(attended_features3)
         pooled_features = pooled_features.view(pooled_features.size(0), -1)
         
         # Feature enhancement
@@ -142,7 +143,7 @@ class FineGrainedBirdCNN(nn.Module):
         # Classification
         output = self.classifier(enhanced_features)
         
-        return output, attended_features1+attended_features1, enhanced_features  # Return features for visualization
+        return output, attended_features3, enhanced_features  # Return features for visualization
 
 class BirdClassificationTrainer:
     """Trainer class for fine-grained bird classification with ImageFolder support"""
@@ -674,47 +675,72 @@ class BirdClassificationTrainer:
         print(f"Best validation accuracy was: {checkpoint['best_val_acc']:.2f}%")
 
     def show_heatmap_on_image(self, train_loader):
-            
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+        images_per_window = 36
+        collected_imgs = []
+        collected_heatmaps = []
+
         for batch_id, (data, target) in enumerate(train_loader):
             with torch.no_grad():
                 _, heatmaps, _ = self.model(data)
 
-            i=0
-            # Schleife über alle Bilder im Batch
             for b in range(data.size(0)):
                 img_tensor = data[b].cpu()
                 heatmap_tensor = heatmaps[b].cpu()
 
-
-                # Denormalize images for display
-                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-                std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-                
-                # Alle Heatmaps und Keypoints für dieses Bild visualisieren
-                
-                fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-                axes = axes.ravel()
-                
-                # Originalbild vorbereiten
+                # Denormalisieren und konvertieren
                 img = img_tensor * std + mean
-                img = TF.to_pil_image(img)
+                img = np.array(TF.to_pil_image(img).convert("RGB"))
 
-                axes[0].imshow(img)
-                axes[0].axis('off')
-                heatmap = heatmap_tensor[0]
-                
-                for part_id, pHeatmap in enumerate(heatmap_tensor, 1):                    
-                    heatmap += pHeatmap.numpy()
-                
-                axes[1].imshow(heatmap.numpy(), alpha=0.5, cmap='jet') 
-                
-                plt.tight_layout()
-                plt.show()
-                
-                i+=1
-                if i%5 ==0:
-                    if input("more heatmaps? (y/n): ") == 'n':
+                # Heatmaps summieren
+                heatmap_sum = np.zeros_like(heatmap_tensor[0])
+                for pHeatmap in heatmap_tensor:
+                    heatmap_sum += pHeatmap.numpy()
+
+                # Heatmap auf Bildgröße skalieren
+                heatmap_resized = zoom(
+                    heatmap_sum,
+                    (img.shape[0] / heatmap_sum.shape[0], img.shape[1] / heatmap_sum.shape[1]),
+                    order=3
+                )
+
+                collected_imgs.append(img)
+                collected_heatmaps.append(heatmap_resized)
+
+                # Wenn genug Bilder gesammelt, anzeigen
+                if len(collected_imgs) == images_per_window:
+                    fig, axes = plt.subplots(4, math.ceil(images_per_window/4), figsize=(17, 7))
+                    if isinstance(axes, np.ndarray):
+                        axes = axes.flatten()
+                    for i in range(images_per_window):
+                        axes[i].imshow(collected_imgs[i])
+                        axes[i].imshow(collected_heatmaps[i], cmap='jet', alpha=0.3)
+                        axes[i].axis('off')
+                    
+                    for j in range(images_per_window, len(axes)):
+                        axes[j].axis('off')
+                    plt.tight_layout()
+                    plt.show()
+
+                    # Leeren
+                    collected_imgs.clear()
+                    collected_heatmaps.clear()
+
+                    # Benutzerabfrage
+                    if input("Weitere Heatmaps anzeigen? (y/n): ").lower() != 'y':
                         return
+
+        # Noch verbleibende Bilder anzeigen
+        if collected_imgs:
+            fig, axes = plt.subplots(1, len(collected_imgs), figsize=(15, 5))
+            for i in range(len(collected_imgs)):
+                axes[i].imshow(collected_imgs[i])
+                axes[i].imshow(collected_heatmaps[i], cmap='jet', alpha=0.3)
+                axes[i].axis('off')
+            plt.tight_layout()
+            plt.show()
                                
 def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     """
@@ -750,7 +776,7 @@ def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     # Create the actual model with correct number of classes
     model = FineGrainedBirdCNN(num_classes=num_classes)
     trainer = BirdClassificationTrainer(model)
-    trainer.class_names = temp_trainer.class_names
+    trainer.class_names = temp_trainer.class_names    
     
     # Model summary
     total_params = sum(p.numel() for p in model.parameters())
@@ -828,7 +854,7 @@ def gridsearch(data_directory):
     print("Best accuracy:", best_params[1])
 
 if __name__ == "__main__":
-    data_directory = "./images/bird_dataset_v3/birds"  # Change this to your dataset path
+    data_directory = "d:\Code\BWKI\capybara-classifier\images/bird_dataset_v3/birds"  # Change this to your dataset path
     
     #gridsearch(data_directory)
     
@@ -836,7 +862,7 @@ if __name__ == "__main__":
     trainer, train_loader, val_loader, test_loader, accuracy = main_training_pipeline(
         data_dir=data_directory,
         batch_size=32,
-        epochs=10,
+        epochs=15,
         lr=0.001,
         grid_search=False
     )
