@@ -18,6 +18,7 @@ import math
 from tqdm import tqdm
 import torchvision.transforms.functional as TF
 from scipy.ndimage import zoom
+from torchviz import make_dot
 
 class AttentionModule(nn.Module):
     """Attention mechanism for focusing on discriminative features"""
@@ -47,6 +48,7 @@ class AttentionModule(nn.Module):
         return x * attention.expand_as(x)
 
 class CBAM(nn.Module):
+    """Attention mechanism for focusing on discriminative features"""
     def __init__(self, channels=2048, reduction=4):
         super(CBAM, self).__init__()
         
@@ -89,7 +91,7 @@ class FineGrainedBirdCNN(nn.Module):
         self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
         
         # Add attention modules
-        self.attention = CBAM()#AttentionModule(2048)
+        self.attention = AttentionModule(2048) #CBAM() #Uncomment to use CBAM instead of simple AttentionModule (at the cost of ~5% Accuracy)
         
         # Global average pooling
         self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -125,25 +127,30 @@ class FineGrainedBirdCNN(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
+        
+        visualize_features = []
         # Extract features using backbone
         features = self.backbone(x)
+        visualize_features.append(features[0, :8, :, :])
         
         # Apply attention mechanisms
         attended_features1 = self.attention(features)
+        visualize_features.append(attended_features1[0, :8, :, :])
         attended_features2 = self.attention(attended_features1)
-        attended_features3 = self.attention(attended_features2)
+        visualize_features.append(attended_features2[0, :8, :, :])
         
         # Global average pooling
-        pooled_features = self.global_avg_pool(attended_features3)
+        pooled_features = self.global_avg_pool(attended_features2)
         pooled_features = pooled_features.view(pooled_features.size(0), -1)
         
         # Feature enhancement
         enhanced_features = self.feature_enhance(pooled_features)
+        visualize_features.append(enhanced_features[0, :4])
         
         # Classification
         output = self.classifier(enhanced_features)
         
-        return output, attended_features3, enhanced_features  # Return features for visualization
+        return output, attended_features2, visualize_features  # Return features for visualization
 
 class BirdClassificationTrainer:
     """Trainer class for fine-grained bird classification with ImageFolder support"""
@@ -280,7 +287,7 @@ class BirdClassificationTrainer:
             data, target = data.to(self.device), target.to(self.device)
             
             optimizer.zero_grad()
-            output, _, _ = self.model(data)
+            output, _, features = self.model(data)
             loss = criterion(output, target)
             loss.backward()
             optimizer.step()
@@ -292,7 +299,40 @@ class BirdClassificationTrainer:
             
             if batch_idx % 50 == 0:
                 print(f'Batch {batch_idx}, Loss: {loss.item():.4f}')
-        
+            
+            # Visualize feature maps for each training batch
+            
+            # fig, axes = plt.subplots(3, 8, figsize=(12, 6))
+            # for i in range(len(features)):
+            #     #print(features[:-1])
+            #     feature_tensor = features[i]  # Tensor: [K, H, W]
+            #     for j, channel in enumerate(feature_tensor):  # channel: [H, W]
+                    
+            #         if i != 3:
+            #             print(channel.shape)
+            #             ax_idx = axes[i, j]  # Linearer Index für axes
+            #             ax_idx.imshow(channel.detach().cpu().numpy(), cmap='viridis')
+            #             ax_idx.set_title(f'Bild {i}, Kanal {j}')
+            #             ax_idx.axis('off')
+                        
+            #         else:
+            #             print(channel.item())
+            #             channel = np.array([[channel.detach()]])
+            #             if channel.max() - channel.min() != 0:
+            #                 channel_norm = (channel - channel.min()) / (channel.max() - channel.min()) *255
+            #             else:
+            #                 channel_norm = channel
+                        
+            #             channel_img = channel_norm.astype("uint8")
+            #             Image.fromarray(channel_img).save(f'channel_{i}_{j}.png')     
+            #             break
+            #         channel_norm = (channel - channel.min()) / (channel.max() - channel.min()) *255
+            #         channel_img = channel_norm.detach().cpu().numpy().astype("uint8")    
+            #         Image.fromarray(channel_img).save(f'channel_{i}_{j}.png')                   
+                
+            # plt.tight_layout()
+            # plt.show()
+            
         epoch_loss = running_loss / len(train_loader)
         epoch_acc = 100. * correct / total
         
@@ -729,7 +769,7 @@ class BirdClassificationTrainer:
                     collected_heatmaps.clear()
 
                     # Benutzerabfrage
-                    if input("Weitere Heatmaps anzeigen? (y/n): ").lower() != 'y':
+                    if input("Print more heatmaps? (y/n): ").lower() != 'y':
                         return
 
         # Noch verbleibende Bilder anzeigen
@@ -766,7 +806,6 @@ def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     model = None
     trainer = None
     
-    #try:
     # Prepare data
     temp_trainer = BirdClassificationTrainer(FineGrainedBirdCNN(10))  # Temporary
     train_loader, val_loader, test_loader, num_classes = temp_trainer.prepare_data(
@@ -813,11 +852,6 @@ def main_training_pipeline(data_dir, batch_size, epochs, lr, grid_search):
     
     return trainer, train_loader, val_loader, test_loader, accuracy
     
-        
-        
-    #except Exception as e:
-    #    print(f"Error during training: {str(e)}")
-    #    return None, None, None, None, None
 
 def gridsearch(data_directory):
     param_grid = {
@@ -854,15 +888,16 @@ def gridsearch(data_directory):
     print("Best accuracy:", best_params[1])
 
 if __name__ == "__main__":
-    data_directory = "d:\Code\BWKI\capybara-classifier\images/bird_dataset_v3/birds"  # Change this to your dataset path
+    data_directory = "./images/bird_dataset_v3/birds"
     
+    #Uncomment to run gridsearch
     #gridsearch(data_directory)
     
     
     trainer, train_loader, val_loader, test_loader, accuracy = main_training_pipeline(
         data_dir=data_directory,
         batch_size=32,
-        epochs=15,
+        epochs=30,
         lr=0.001,
         grid_search=False
     )
